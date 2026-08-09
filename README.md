@@ -25,7 +25,7 @@ There's no background daemon and nothing running between sessions. Sync happens 
 
 ## Requirements
 
-- [Ludusavi](https://github.com/mtkennerly/ludusavi) installed and on your `PATH`
+- [Ludusavi](https://github.com/mtkennerly/ludusavi). Either on your `PATH`, or just drop `ludusavi.exe` in the same folder as `nimbus.exe` (or `target/release/nimbus.exe` if building from source) — nimbus checks next to itself first, so no PATH setup is required.
 - In Ludusavi's own settings (`ludusavi gui`): a backup path pointed at your shared folder (not the local default), format set to `zip`, and a full-backup retention above 1 so old saves aren't silently overwritten
 
 ## Setup

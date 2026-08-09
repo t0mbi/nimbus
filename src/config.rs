@@ -73,9 +73,22 @@ impl Config {
         }
     }
 
+    /// Resolution order: explicit config override, then a `ludusavi[.exe]`
+    /// sitting next to nimbus's own executable (so keeping both binaries in
+    /// one folder just works with nothing to configure), then whatever
+    /// `PATH` resolves - see [`bundled_ludusavi`].
     pub fn ludusavi_bin(&self) -> PathBuf {
-        self.ludusavi_path.clone().unwrap_or_else(|| PathBuf::from("ludusavi"))
+        if let Some(path) = &self.ludusavi_path {
+            return path.clone();
+        }
+        bundled_ludusavi().unwrap_or_else(|| PathBuf::from("ludusavi"))
     }
+}
+
+fn bundled_ludusavi() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let candidate = dir.join(format!("ludusavi{}", std::env::consts::EXE_SUFFIX));
+    candidate.is_file().then_some(candidate)
 }
 
 fn key(exe: &Path) -> String {
