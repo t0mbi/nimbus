@@ -8,6 +8,21 @@ use std::process::Command;
 pub const DEFAULT_FORMAT: &str = "zip";
 pub const DEFAULT_FULL_LIMIT: u8 = 5;
 
+/// A `Command` for `bin` with a console window suppressed on Windows.
+/// Ludusavi is a console-subsystem executable; spawned silently from a
+/// windowed Nimbus with no console of its own to attach to, Windows would
+/// otherwise pop open a new console window for it on every single call.
+pub fn ludusavi_command(bin: &Path) -> Command {
+    let mut cmd = Command::new(bin);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Nimbus is the single settings surface the user ever touches - this struct
 /// is the one source of truth for where saves go and how they're kept.
 /// Ludusavi's own config file is never written to; instead every ludusavi
@@ -145,7 +160,7 @@ pub fn install_dir() -> Option<PathBuf> {
 
 /// Version string if the configured Ludusavi actually runs, else None.
 pub fn probe_ludusavi(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let out = ludusavi_command(bin).arg("--version").output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -161,7 +176,7 @@ struct InheritedBackupSettings {
 /// Best-effort: if Ludusavi has never been configured, or the format shifts,
 /// this just yields nothing and the user picks fresh values instead.
 fn ludusavi_backup_settings(bin: &Path) -> Option<InheritedBackupSettings> {
-    let out = Command::new(bin).args(["config", "show"]).output().ok()?;
+    let out = ludusavi_command(bin).args(["config", "show"]).output().ok()?;
     if !out.status.success() {
         return None;
     }

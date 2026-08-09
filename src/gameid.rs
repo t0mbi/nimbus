@@ -1,9 +1,8 @@
-use crate::config::Config;
+use crate::config::{ludusavi_command, Config};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use std::process::Command;
 
 /// How to hand game identity to `ludusavi wrap`.
 #[derive(Debug, Clone)]
@@ -70,7 +69,7 @@ pub fn guess_name(bin: &Path, exe: &Path) -> Option<String> {
             continue;
         }
 
-        let out = Command::new(bin)
+        let out = ludusavi_command(bin)
             .args(["find", "--fuzzy", "--normalized", "--api", &cleaned])
             .output()
             .ok()?;

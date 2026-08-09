@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{ludusavi_command, Config};
 use crate::gameid::{self, Identity};
 use crate::log;
 use crate::ui::{self, Confirmation};
@@ -101,7 +101,7 @@ fn via_ludusavi(config: &Config, identity: &Identity, cmd: &[String]) -> ExitCod
     let bin = config.ludusavi_bin();
     log::line(&format!("{} {}", bin.display(), args.join(" ")));
 
-    match Command::new(&bin).args(&args).status() {
+    match ludusavi_command(&bin).args(&args).status() {
         Ok(status) => {
             log::line(&format!("session finished (ludusavi exit {:?})", status.code()));
             // `ludusavi wrap` reports its own exit code, not the game's. Fine

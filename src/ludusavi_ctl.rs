@@ -1,7 +1,7 @@
+use crate::config::ludusavi_command;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 pub struct GameStatus {
     pub name: String,
@@ -30,7 +30,7 @@ struct PreviewFile {
 /// the whole library (can take upwards of 20s for a large collection) - the
 /// caller is responsible for running it off the UI thread.
 pub fn list_games(bin: &Path) -> Result<Vec<GameStatus>, String> {
-    let out = Command::new(bin)
+    let out = ludusavi_command(bin)
         .args(["backup", "--preview", "--api"])
         .output()
         .map_err(|e| format!("couldn't run ludusavi: {e}"))?;
@@ -87,7 +87,7 @@ fn run(
     full_limit: Option<u8>,
     game: &str,
 ) -> Result<(), String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = ludusavi_command(bin);
     cmd.args(leading_args).arg(sync_path);
     if let Some((flag, value)) = format {
         cmd.args([flag, value]);
