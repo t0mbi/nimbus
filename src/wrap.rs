@@ -14,12 +14,21 @@ pub fn run(cmd: &[String]) -> ExitCode {
     };
 
     let mut config = Config::load().unwrap_or_default();
+    // Covers the case where the sync folder was set up in Ludusavi's own GUI
+    // before Nimbus's settings window was ever opened - see
+    // Config::inherit_from_ludusavi_if_unset.
+    config.inherit_from_ludusavi_if_unset();
+
     let exe_path = Path::new(exe);
     let identity = resolve_with_fallback(&mut config, exe_path);
 
-    match identity {
-        Some(identity) => via_ludusavi(&config, &identity, cmd),
-        None => {
+    match (&config.sync_path, identity) {
+        (Some(_), Some(identity)) => via_ludusavi(&config, &identity, cmd),
+        (None, _) => {
+            log::line("no sync folder configured (open nimbus to set one) - launching without sync");
+            run_raw(exe, &cmd[1..])
+        }
+        (_, None) => {
             log::line(&format!("no identity for '{exe}' - launching without sync"));
             run_raw(exe, &cmd[1..])
         }
@@ -61,9 +70,19 @@ fn resolve_with_fallback(config: &mut Config, exe: &Path) -> Option<Identity> {
 }
 
 fn via_ludusavi(config: &Config, identity: &Identity, cmd: &[String]) -> ExitCode {
-    // No --path, --format, or --full-limit: those are Ludusavi's own settings,
-    // configured in its GUI. Nimbus only ever supplies the game identity.
-    let mut args: Vec<String> = vec!["wrap".into(), "--force".into()];
+    // sync_path is checked by the caller before this is reached.
+    let sync_path = config.sync_path.as_ref().expect("sync_path checked by caller");
+
+    let mut args: Vec<String> = vec![
+        "wrap".into(),
+        "--path".into(),
+        sync_path.to_string_lossy().into_owned(),
+        "--format".into(),
+        config.format().to_string(),
+        "--full-limit".into(),
+        config.full_limit().to_string(),
+        "--force".into(),
+    ];
 
     match identity {
         Identity::Infer(launcher) => {

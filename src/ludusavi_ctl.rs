@@ -1,0 +1,109 @@
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Command;
+
+pub struct GameStatus {
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Deserialize)]
+struct PreviewOutput {
+    #[serde(default)]
+    games: HashMap<String, PreviewGame>,
+}
+
+#[derive(Deserialize)]
+struct PreviewGame {
+    #[serde(default)]
+    files: HashMap<String, PreviewFile>,
+}
+
+#[derive(Deserialize, Default)]
+struct PreviewFile {
+    #[serde(default)]
+    bytes: u64,
+}
+
+/// Every game Ludusavi finds local save data for, on this machine. This scans
+/// the whole library (can take upwards of 20s for a large collection) - the
+/// caller is responsible for running it off the UI thread.
+pub fn list_games(bin: &Path) -> Result<Vec<GameStatus>, String> {
+    let out = Command::new(bin)
+        .args(["backup", "--preview", "--api"])
+        .output()
+        .map_err(|e| format!("couldn't run ludusavi: {e}"))?;
+
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+
+    let parsed: PreviewOutput =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("unexpected ludusavi output: {e}"))?;
+
+    let mut games: Vec<GameStatus> = parsed
+        .games
+        .into_iter()
+        .map(|(name, g)| {
+            let bytes = g.files.values().map(|f| f.bytes).sum();
+            GameStatus { name, bytes }
+        })
+        .collect();
+    games.sort_by_key(|g| g.name.to_lowercase());
+    Ok(games)
+}
+
+/// Manual "Push": backs up one game's current local saves to `sync_path`,
+/// using Nimbus's own format/retention settings (Ludusavi's config is never
+/// touched).
+pub fn backup(bin: &Path, sync_path: &Path, format: &str, full_limit: u8, game: &str) -> Result<(), String> {
+    run(
+        bin,
+        [
+            "backup",
+            "--api",
+            "--force",
+            "--path",
+        ],
+        sync_path,
+        Some(("--format", format)),
+        Some(full_limit),
+        game,
+    )
+}
+
+/// Manual "Pull": restores one game's saves from `sync_path` into its local
+/// save location.
+pub fn restore(bin: &Path, sync_path: &Path, game: &str) -> Result<(), String> {
+    run(bin, ["restore", "--api", "--force", "--path"], sync_path, None, None, game)
+}
+
+fn run(
+    bin: &Path,
+    leading_args: [&str; 4],
+    sync_path: &Path,
+    format: Option<(&str, &str)>,
+    full_limit: Option<u8>,
+    game: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new(bin);
+    cmd.args(leading_args).arg(sync_path);
+    if let Some((flag, value)) = format {
+        cmd.args([flag, value]);
+    }
+    if let Some(limit) = full_limit {
+        cmd.args(["--full-limit", &limit.to_string()]);
+    }
+    cmd.arg(game);
+
+    let out = cmd.output().map_err(|e| format!("couldn't run ludusavi: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let msg = if !stderr.trim().is_empty() { stderr } else { stdout };
+        Err(msg.trim().to_string())
+    }
+}

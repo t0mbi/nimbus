@@ -5,14 +5,19 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Nimbus deliberately stores almost nothing. Where saves go, how many
-/// versions are kept, and what format they're in all live in Ludusavi's own
-/// config, editable in its GUI - nimbus doesn't duplicate or override any of
-/// it. All that's kept here is what Ludusavi has no concept of: which game a
-/// given executable belongs to.
-#[derive(Serialize, Deserialize, Default, Debug)]
+pub const DEFAULT_FORMAT: &str = "zip";
+pub const DEFAULT_FULL_LIMIT: u8 = 5;
+
+/// Nimbus is the single settings surface the user ever touches - this struct
+/// is the one source of truth for where saves go and how they're kept.
+/// Ludusavi's own config file is never written to; instead every ludusavi
+/// invocation gets `--path`/`--format`/`--full-limit` passed explicitly.
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Config {
-    /// Override if `ludusavi` isn't on PATH.
+    pub sync_path: Option<PathBuf>,
+    pub format: Option<String>,
+    pub full_limit: Option<u8>,
+    /// Override if `ludusavi` isn't on PATH and no bundled copy is found.
     pub ludusavi_path: Option<PathBuf>,
     /// exe path -> confirmed Ludusavi game name, for launches with no
     /// identifying env var. Populated by the one-time confirmation prompt.
@@ -73,6 +78,14 @@ impl Config {
         }
     }
 
+    pub fn format(&self) -> &str {
+        self.format.as_deref().unwrap_or(DEFAULT_FORMAT)
+    }
+
+    pub fn full_limit(&self) -> u8 {
+        self.full_limit.unwrap_or(DEFAULT_FULL_LIMIT)
+    }
+
     /// Resolution order: explicit config override, then a `ludusavi[.exe]`
     /// sitting next to nimbus's own executable (so keeping both binaries in
     /// one folder just works with nothing to configure), then whatever
@@ -82,6 +95,26 @@ impl Config {
             return path.clone();
         }
         bundled_ludusavi().unwrap_or_else(|| PathBuf::from("ludusavi"))
+    }
+
+    /// One-time convenience for a first run: if nimbus has no sync path of
+    /// its own yet, borrow whatever Ludusavi already has configured (from a
+    /// prior standalone install) as a starting point, rather than making the
+    /// user re-type a path they already set once. Never overwrites a value
+    /// nimbus already has.
+    pub fn inherit_from_ludusavi_if_unset(&mut self) {
+        if self.sync_path.is_some() {
+            return;
+        }
+        let bin = self.ludusavi_bin();
+        let Some(settings) = ludusavi_backup_settings(&bin) else { return };
+        self.sync_path = settings.path.map(PathBuf::from);
+        if self.format.is_none() {
+            self.format = settings.format;
+        }
+        if self.full_limit.is_none() {
+            self.full_limit = settings.full_limit;
+        }
     }
 }
 
@@ -104,42 +137,82 @@ pub fn launch_options_string() -> String {
     format!("\"{exe}\" %command%")
 }
 
+/// Just the exe's own directory, quoted - what an "Add to PATH" step needs,
+/// as opposed to the full launch_options_string.
+pub fn install_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
+}
+
 /// Version string if the configured Ludusavi actually runs, else None.
 pub fn probe_ludusavi(bin: &Path) -> Option<String> {
     let out = Command::new(bin).arg("--version").output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Reads `backup.path` out of `ludusavi config show` so the setup window can
-/// show where saves are actually going. Best-effort: nimbus doesn't own this
-/// setting and shouldn't fail if the format shifts.
-pub fn ludusavi_backup_path(bin: &Path) -> Option<String> {
+#[derive(Default, Debug, PartialEq)]
+struct InheritedBackupSettings {
+    path: Option<String>,
+    format: Option<String>,
+    full_limit: Option<u8>,
+}
+
+/// Reads `backup.path` / `backup.format.chosen` / `backup.retention.full` out
+/// of `ludusavi config show`, for the one-time inherit on first run.
+/// Best-effort: if Ludusavi has never been configured, or the format shifts,
+/// this just yields nothing and the user picks fresh values instead.
+fn ludusavi_backup_settings(bin: &Path) -> Option<InheritedBackupSettings> {
     let out = Command::new(bin).args(["config", "show"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    parse_backup_path(&String::from_utf8_lossy(&out.stdout))
+    Some(parse_backup_settings(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// Pulls `backup: / path: "..."` out of `ludusavi config show`'s YAML.
-/// Deliberately a dumb top-level-key scanner rather than a real YAML parse -
-/// this is a best-effort read of a config file nimbus doesn't own, and
-/// shouldn't gain a parser dependency just to stay resilient to reordering.
-fn parse_backup_path(text: &str) -> Option<String> {
-    let mut in_backup = false;
-    for line in text.lines() {
-        if !line.starts_with([' ', '\t']) {
-            in_backup = line.trim_end() == "backup:";
+fn parse_backup_settings(text: &str) -> InheritedBackupSettings {
+    let leaves = scan_yaml_leaves(text);
+    InheritedBackupSettings {
+        path: leaves.get("backup.path").cloned(),
+        format: leaves.get("backup.format.chosen").cloned(),
+        full_limit: leaves.get("backup.retention.full").and_then(|v| v.parse().ok()),
+    }
+}
+
+/// A deliberately dumb YAML leaf-scanner: tracks section nesting purely by
+/// indentation and returns every `a.b.c -> value` leaf it sees. No lists, no
+/// multi-line scalars, no anchors - Ludusavi's own config doesn't need any of
+/// that for the handful of keys nimbus cares about, and a real parser
+/// dependency isn't worth it for reading a file nimbus doesn't own.
+fn scan_yaml_leaves(text: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+
+    for raw in text.lines() {
+        let trimmed = raw.trim_start();
+        if trimmed.is_empty() || trimmed == "---" || trimmed.starts_with(['#', '-']) {
             continue;
         }
-        if in_backup {
-            let t = line.trim();
-            if let Some(v) = t.strip_prefix("path:") {
-                return Some(v.trim().trim_matches('"').to_string());
-            }
+        let Some(colon) = trimmed.find(':') else { continue };
+        let indent = raw.len() - trimmed.len();
+        let key = trimmed[..colon].trim().to_string();
+        let rest = trimmed[colon + 1..].trim();
+
+        while stack.last().is_some_and(|(i, _)| *i >= indent) {
+            stack.pop();
+        }
+
+        if rest.is_empty() {
+            stack.push((indent, key));
+        } else {
+            let path = stack
+                .iter()
+                .map(|(_, k)| k.as_str())
+                .chain(std::iter::once(key.as_str()))
+                .collect::<Vec<_>>()
+                .join(".");
+            out.insert(path, rest.trim_matches('"').to_string());
         }
     }
-    None
+    out
 }
 
 #[cfg(test)]
@@ -166,35 +239,44 @@ backup:
   filter:
     excludeStoreScreenshots: false
   retention:
-    full: 1
+    full: 5
     differential: 0
   format:
-    chosen: simple
+    chosen: zip
+    zip:
+      compression: deflate
 restore:
   path: "C:/Users/urina/ludusavi-backup"
 "#;
 
     #[test]
-    fn finds_backup_path_under_its_own_key() {
-        assert_eq!(
-            parse_backup_path(SAMPLE),
-            Some("C:/Users/urina/ludusavi-backup".to_string())
-        );
+    fn reads_backup_path_format_and_retention() {
+        let settings = parse_backup_settings(SAMPLE);
+        assert_eq!(settings.path.as_deref(), Some("C:/Users/urina/ludusavi-backup"));
+        assert_eq!(settings.format.as_deref(), Some("zip"));
+        assert_eq!(settings.full_limit, Some(5));
     }
 
     #[test]
-    fn does_not_match_restores_path() {
-        // `restore.path` comes after `backup.path` in real output and must
-        // not be picked up if backup's were somehow missing.
+    fn does_not_confuse_restore_path_with_backup_path() {
         let restore_only = r#"---
 restore:
   path: "C:/should/not/match"
 "#;
-        assert_eq!(parse_backup_path(restore_only), None);
+        assert_eq!(parse_backup_settings(restore_only).path, None);
     }
 
     #[test]
-    fn missing_backup_key_yields_none() {
-        assert_eq!(parse_backup_path("---\nlanguage: en-US\n"), None);
+    fn missing_backup_key_yields_defaults() {
+        assert_eq!(parse_backup_settings("---\nlanguage: en-US\n"), InheritedBackupSettings::default());
+    }
+
+    #[test]
+    fn sibling_sections_do_not_leak_into_each_other() {
+        // format.zip.compression must not be mistaken for format.chosen, and
+        // retention's "full" must not collide with anything above it.
+        let leaves = scan_yaml_leaves(SAMPLE);
+        assert_eq!(leaves.get("backup.format.zip.compression").map(|s| s.as_str()), Some("deflate"));
+        assert_eq!(leaves.get("backup.retention.full").map(|s| s.as_str()), Some("5"));
     }
 }

@@ -5,7 +5,10 @@
 
 mod config;
 mod gameid;
+mod gui;
 mod log;
+mod ludusavi_ctl;
+mod pathset;
 mod ui;
 mod wrap;
 
@@ -19,8 +22,8 @@ fn main() -> ExitCode {
 
     match args.get(1).map(|s| s.as_str()) {
         None => {
-            // Double-clicked, or run bare: show the setup dialog.
-            ui::setup();
+            // Double-clicked, or run bare: open the settings window.
+            gui::run();
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {
@@ -39,15 +42,12 @@ fn print_help() {
     println!(
         r#"nimbus {VERSION} - self-hosted cloud saves, built on ludusavi
 
-    nimbus                     Open setup (Launch Options string, status)
+    nimbus                     Open settings (sync folder, games, Launch Options)
     nimbus <command> [args]    Restore, run command (blocking), back up.
                                This is what goes in Launch Options:
                                    nimbus %command%
     nimbus --version
     nimbus --help
-
-Where saves go, formats, and retention are Ludusavi's own settings - open
-them with `ludusavi gui` or from the Nimbus setup window.
 "#
     );
 }
