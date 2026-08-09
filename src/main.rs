@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         "--forget-exe" => cmd_forget_exe(&args[2..]),
         "--list" => cmd_list(),
         "--version" | "-V" => {
-            println!("savewrap {VERSION}");
+            println!("nimbus {VERSION}");
             ExitCode::SUCCESS
         }
         "--help" | "-h" => {
@@ -37,24 +37,24 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        r#"savewrap {VERSION} - launch-triggered save sync, built on ludusavi
+        r#"nimbus {VERSION} - launch-triggered save sync, built on ludusavi
 
 USAGE:
-    savewrap <command> [args...]      Restore, run <command> (blocking), back up.
-                                       This is what goes in Launch Options:
-                                           savewrap %command%
+    nimbus <command> [args...]            Restore, run <command> (blocking), back up.
+                                          This is what goes in Launch Options:
+                                              nimbus %command%
 
-    savewrap --set-remote <path>              Set the self-hosted sync destination
-                                               (e.g. a mounted network share)
-    savewrap --set-name <exe-path> <name>     Manually confirm the ludusavi game
-                                               name for an exe (for launchers that
-                                               don't set SteamAppId)
-    savewrap --set-full-limit <n>             How many historical versions
-                                               ludusavi retains per game (default 5)
-    savewrap --forget-exe <exe-path>          Remove an exe -> name mapping
-    savewrap --list                           Show current config
-    savewrap --version
-    savewrap --help
+    nimbus --set-remote <path>            Set the self-hosted sync destination
+                                          (e.g. a mounted network share)
+    nimbus --set-name <exe-path> <name>   Manually confirm the ludusavi game name
+                                          for an exe (for launchers that don't
+                                          set SteamAppId)
+    nimbus --set-full-limit <n>           How many historical versions ludusavi
+                                          retains per game (default 5)
+    nimbus --forget-exe <exe-path>        Remove an exe -> name mapping
+    nimbus --list                         Show current config
+    nimbus --version
+    nimbus --help
 
 Requires `ludusavi` (https://github.com/mtkennerly/ludusavi) on PATH.
 "#
@@ -63,7 +63,7 @@ Requires `ludusavi` (https://github.com/mtkennerly/ludusavi) on PATH.
 
 fn cmd_set_remote(args: &[String]) -> ExitCode {
     let Some(path) = args.first() else {
-        eprintln!("usage: savewrap --set-remote <path>");
+        eprintln!("usage: nimbus --set-remote <path>");
         return ExitCode::FAILURE;
     };
     let mut config = load_config_or_exit();
@@ -75,7 +75,7 @@ fn cmd_set_remote(args: &[String]) -> ExitCode {
 
 fn cmd_set_name(args: &[String]) -> ExitCode {
     if args.len() < 2 {
-        eprintln!("usage: savewrap --set-name <exe-path> <ludusavi-game-name>");
+        eprintln!("usage: nimbus --set-name <exe-path> <ludusavi-game-name>");
         return ExitCode::FAILURE;
     }
     let exe = args[0].clone();
@@ -89,7 +89,7 @@ fn cmd_set_name(args: &[String]) -> ExitCode {
 
 fn cmd_set_full_limit(args: &[String]) -> ExitCode {
     let Some(n) = args.first().and_then(|s| s.parse::<u8>().ok()) else {
-        eprintln!("usage: savewrap --set-full-limit <1-255>");
+        eprintln!("usage: nimbus --set-full-limit <1-255>");
         return ExitCode::FAILURE;
     };
     let mut config = load_config_or_exit();
@@ -101,7 +101,7 @@ fn cmd_set_full_limit(args: &[String]) -> ExitCode {
 
 fn cmd_forget_exe(args: &[String]) -> ExitCode {
     let Some(exe) = args.first() else {
-        eprintln!("usage: savewrap --forget-exe <exe-path>");
+        eprintln!("usage: nimbus --forget-exe <exe-path>");
         return ExitCode::FAILURE;
     };
     let mut config = load_config_or_exit();
@@ -125,7 +125,7 @@ fn cmd_list() -> ExitCode {
 
 fn run_wrapped(cmd: &[String]) -> ExitCode {
     let Some(exe) = cmd.first() else {
-        eprintln!("savewrap: no command given");
+        eprintln!("nimbus: no command given");
         return ExitCode::FAILURE;
     };
 
@@ -138,13 +138,13 @@ fn run_wrapped(cmd: &[String]) -> ExitCode {
             run_via_ludusavi(&config, remote_root, identity, cmd)
         }
         (None, _) => {
-            eprintln!("savewrap: no remote configured (run --set-remote) - launching without sync");
+            eprintln!("nimbus: no remote configured (run --set-remote) - launching without sync");
             run_raw(exe, &cmd[1..])
         }
         (_, None) => {
             eprintln!(
-                "savewrap: game not recognized (no SteamAppId, and no saved mapping for \
-                 '{exe}') - launching without sync. Fix with: savewrap --set-name \"{exe}\" \
+                "nimbus: game not recognized (no SteamAppId, and no saved mapping for \
+                 '{exe}') - launching without sync. Fix with: nimbus --set-name \"{exe}\" \
                  \"<Ludusavi Game Name>\""
             );
             run_raw(exe, &cmd[1..])
@@ -185,7 +185,7 @@ fn run_via_ludusavi(
     ludu_args.push("--".into());
     ludu_args.extend(cmd.iter().cloned());
 
-    eprintln!("savewrap: {} {}", config.ludusavi_bin().display(), ludu_args.join(" "));
+    eprintln!("nimbus: {} {}", config.ludusavi_bin().display(), ludu_args.join(" "));
 
     match Command::new(config.ludusavi_bin()).args(&ludu_args).status() {
         Ok(status) => {
@@ -196,7 +196,7 @@ fn run_via_ludusavi(
         }
         Err(e) => {
             eprintln!(
-                "savewrap: failed to launch ludusavi ({e}) - is it installed and on PATH? \
+                "nimbus: failed to launch ludusavi ({e}) - is it installed and on PATH? \
                  Falling back to launching the game without sync."
             );
             run_raw(&cmd[0], &cmd[1..])
@@ -208,7 +208,7 @@ fn run_raw(exe: &str, args: &[String]) -> ExitCode {
     match Command::new(exe).args(args).status() {
         Ok(status) => ExitCode::from(status.code().unwrap_or(0) as u8),
         Err(e) => {
-            eprintln!("savewrap: failed to launch '{exe}': {e}");
+            eprintln!("nimbus: failed to launch '{exe}': {e}");
             ExitCode::FAILURE
         }
     }
@@ -218,7 +218,7 @@ fn load_config_or_exit() -> Config {
     match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("savewrap: failed to load config: {e}");
+            eprintln!("nimbus: failed to load config: {e}");
             std::process::exit(1);
         }
     }
@@ -226,7 +226,7 @@ fn load_config_or_exit() -> Config {
 
 fn save_config_or_exit(config: &Config) {
     if let Err(e) = config.save() {
-        eprintln!("savewrap: failed to save config: {e}");
+        eprintln!("nimbus: failed to save config: {e}");
         std::process::exit(1);
     }
 }

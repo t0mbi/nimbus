@@ -16,7 +16,7 @@ pub enum Identity {
 ///   1. `SteamAppId` env var (Steam sets this on any process it launches,
 ///      including through a `%command%` wrapper) -> defer to ludusavi's own
 ///      `--infer steam`, which does the actual name lookup.
-///   2. `SAVEWRAP_GAME_NAME` env var - explicit override, used for testing and
+///   2. `NIMBUS_GAME_NAME` env var - explicit override, used for testing and
 ///      for anyone manually wrapping a launcher we don't auto-detect yet.
 ///   3. Previously-confirmed exe_path -> name mapping in config. This is what
 ///      the (not-yet-built) one-time confirmation prompt will populate for
@@ -30,7 +30,7 @@ pub fn resolve(exe_path: &Path, config: &Config) -> Option<Identity> {
         return Some(Identity::Infer("steam"));
     }
 
-    if let Ok(name) = env::var("SAVEWRAP_GAME_NAME") {
+    if let Ok(name) = env::var("NIMBUS_GAME_NAME") {
         return Some(Identity::Named(name));
     }
 

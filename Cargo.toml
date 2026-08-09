@@ -1,7 +1,10 @@
 [package]
-name = "savewrap"
+name = "nimbus"
 version = "0.1.0"
 edition = "2021"
+description = "Self-hosted cloud saves for PC games, built on Ludusavi"
+license = "MIT"
+repository = "https://github.com/t0mbi/nimbus"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

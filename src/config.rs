@@ -26,7 +26,7 @@ fn config_dir() -> io::Result<PathBuf> {
     let base = dirs::config_dir().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "could not determine OS config directory")
     })?;
-    Ok(base.join("savewrap"))
+    Ok(base.join("nimbus"))
 }
 
 fn config_file() -> io::Result<PathBuf> {
