@@ -155,3 +155,33 @@ pub fn latest_remote_backup(bin: &Path, sync_path: &Path, game: &str) -> Result<
         .get(game)
         .and_then(|g| g.backups.iter().map(|b| b.when.clone()).max()))
 }
+
+/// Same data as [`latest_remote_backup`], but for every game at `sync_path`
+/// in a single call. Measured cost: ludusavi loads/parses its full manifest
+/// on almost any real invocation (~850ms on this machine, regardless of
+/// subcommand or how many games are asked about - `--version` alone is
+/// ~80ms). That means one call per game in a poll loop doesn't scale: 71
+/// games x ~850ms is over a minute, longer than the poll interval itself.
+/// Checking everything in one call costs the same ~850ms as checking one
+/// game, since the manifest load dominates - so the poll loop should always
+/// use this, never the single-game version, in a loop over many games.
+pub fn latest_remote_backups_all(bin: &Path, sync_path: &Path) -> Result<HashMap<String, String>, String> {
+    let out = ludusavi_command(bin)
+        .args(["backups", "--api", "--path"])
+        .arg(sync_path)
+        .output()
+        .map_err(|e| format!("couldn't run ludusavi: {e}"))?;
+
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+
+    let parsed: BackupsOutput =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("unexpected ludusavi output: {e}"))?;
+
+    Ok(parsed
+        .games
+        .into_iter()
+        .filter_map(|(name, g)| g.backups.into_iter().map(|b| b.when).max().map(|when| (name, when)))
+        .collect())
+}

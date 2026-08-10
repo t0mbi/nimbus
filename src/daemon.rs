@@ -11,7 +11,7 @@ use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -213,40 +213,54 @@ fn start_poll_thread(games: Vec<GameStatus>, config: Config, paused: Arc<AtomicB
         if paused.load(Ordering::Relaxed) {
             continue;
         }
-        for game in &games {
-            poll_one(&config, game, &state);
-        }
+        poll_all(&games, &config, &state);
     });
 }
 
-fn poll_one(config: &Config, game: &GameStatus, state: &Arc<Mutex<DaemonState>>) {
+/// One `ludusavi backups --api` call covering every game, not one call per
+/// game - see `ludusavi_ctl::latest_remote_backups_all`'s doc comment.
+/// Measured: ~850ms either way on this machine, so doing it per-game here
+/// would turn a 45s poll interval into 71 games x ~850ms = over a minute of
+/// actual work per cycle, longer than the interval itself.
+fn poll_all(games: &[GameStatus], config: &Config, state: &Arc<Mutex<DaemonState>>) {
     let bin = config.ludusavi_bin();
     let Some(sync_path) = &config.sync_path else { return };
 
-    let Ok(Some(remote_ts)) = ludusavi_ctl::latest_remote_backup(&bin, sync_path, &game.name) else {
-        return;
+    let remote = match ludusavi_ctl::latest_remote_backups_all(&bin, sync_path) {
+        Ok(map) => map,
+        Err(e) => {
+            log::line(&format!("daemon: couldn't check remote backups: {e}"));
+            return;
+        }
     };
 
+    for game in games {
+        let Some(remote_ts) = remote.get(&game.name) else { continue };
+        poll_one(&bin, sync_path, &game.name, remote_ts, state);
+    }
+}
+
+fn poll_one(bin: &Path, sync_path: &Path, name: &str, remote_ts: &str, state: &Arc<Mutex<DaemonState>>) {
     let already_known = {
         let s = state.lock().unwrap();
-        s.last_synced_remote.get(&game.name).cloned()
+        s.last_synced_remote.get(name).cloned()
     };
 
-    if already_known.as_deref() == Some(remote_ts.as_str()) {
+    if already_known.as_deref() == Some(remote_ts) {
         return; // nothing new since we last accounted for this
     }
 
-    log::line(&format!("daemon: remote has a newer save for {}, pulling", game.name));
-    match ludusavi_ctl::restore(&bin, sync_path, &game.name) {
+    log::line(&format!("daemon: remote has a newer save for {name}, pulling"));
+    match ludusavi_ctl::restore(bin, sync_path, name) {
         Ok(()) => {
-            toast::pulled(&game.name);
+            toast::pulled(name);
             let mut s = state.lock().unwrap();
-            s.last_synced_remote.insert(game.name.clone(), remote_ts);
+            s.last_synced_remote.insert(name.to_string(), remote_ts.to_string());
             s.save();
         }
         Err(e) => {
-            log::line(&format!("daemon: pull failed for {}: {e}", game.name));
-            toast::restore_failed(&game.name, &e);
+            log::line(&format!("daemon: pull failed for {name}: {e}"));
+            toast::restore_failed(name, &e);
         }
     }
 }
@@ -263,8 +277,6 @@ fn sync_all_now(config: &Config, state: &Arc<Mutex<DaemonState>>) {
             return;
         }
     };
-    for game in &games {
-        poll_one(config, game, state);
-    }
+    poll_all(&games, config, state);
     toast::info("Nimbus", "Sync check complete.");
 }
