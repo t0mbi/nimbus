@@ -236,11 +236,19 @@ fn poll_all(games: &[GameStatus], config: &Config, state: &Arc<Mutex<DaemonState
 
     for game in games {
         let Some(remote_ts) = remote.get(&game.name) else { continue };
-        poll_one(&bin, sync_path, &game.name, remote_ts, state);
+        let local_epoch = ludusavi_ctl::latest_local_mtime_epoch(&game.paths);
+        poll_one(&bin, sync_path, &game.name, remote_ts, local_epoch, state);
     }
 }
 
-fn poll_one(bin: &Path, sync_path: &Path, name: &str, remote_ts: &str, state: &Arc<Mutex<DaemonState>>) {
+fn poll_one(
+    bin: &Path,
+    sync_path: &Path,
+    name: &str,
+    remote_ts: &str,
+    local_epoch: Option<f64>,
+    state: &Arc<Mutex<DaemonState>>,
+) {
     let already_known = {
         let s = state.lock().unwrap();
         s.last_synced_remote.get(name).cloned()
@@ -248,6 +256,21 @@ fn poll_one(bin: &Path, sync_path: &Path, name: &str, remote_ts: &str, state: &A
 
     if already_known.as_deref() == Some(remote_ts) {
         return; // nothing new since we last accounted for this
+    }
+
+    // The actual bug this guards against: on a daemon's first-ever run
+    // against a share that already has backups from prior manual Ludusavi
+    // use, "different from what I've recorded" is true for every game
+    // (nothing recorded yet) - without this check, that meant pulling
+    // everything unconditionally, regardless of whether the local copy was
+    // actually more current. Only pull when the remote genuinely is newer.
+    if !ludusavi_ctl::remote_is_newer(remote_ts, local_epoch) {
+        // Still worth remembering we've seen this remote state, so a
+        // stale-but-unchanged remote doesn't get re-evaluated every cycle.
+        let mut s = state.lock().unwrap();
+        s.last_synced_remote.insert(name.to_string(), remote_ts.to_string());
+        s.save();
+        return;
     }
 
     log::line(&format!("daemon: remote has a newer save for {name}, pulling"));
