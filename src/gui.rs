@@ -59,6 +59,8 @@ struct NimbusApp {
     game_filter: String,
 
     path_button_result: Option<Result<(), String>>,
+    background_sync_enabled: bool,
+    background_sync_result: Option<Result<(), String>>,
 }
 
 enum LudusaviStatus {
@@ -100,6 +102,8 @@ impl NimbusApp {
             action: ActionState::Idle,
             game_filter: String::new(),
             path_button_result: None,
+            background_sync_enabled: crate::startup::is_enabled(),
+            background_sync_result: None,
         }
     }
 
@@ -211,9 +215,10 @@ impl NimbusApp {
              subscription.",
         );
         ui.label(
-            "When a game launches through Nimbus, it pulls your latest save first. When \
-             you quit, it pushes anything that changed back. That's the whole thing - no \
-             background service, nothing running between sessions.",
+            "It runs quietly in your system tray, watches your games' save files, and syncs \
+             automatically - push the moment you save, pull when another PC has something \
+             newer. Set it up once here; you shouldn't need to touch Steam or any shortcut \
+             ever again.",
         );
         ui.add_space(12.0);
         ui.separator();
@@ -238,48 +243,66 @@ impl NimbusApp {
         }
 
         ui.add_space(12.0);
-        ui.strong("2. Add Nimbus to PATH (optional)");
-        ui.label("Lets Launch Options just say \"nimbus %command%\" instead of a full path.");
-        if let Some(dir) = config::install_dir() {
-            if ui.button("Add Nimbus to PATH").clicked() {
-                self.path_button_result = Some(pathset::add_to_user_path(&dir));
+        ui.strong("2. Turn on background sync");
+        ui.label("Starts at login from now on, and starts running right now too.");
+        let toggle_label =
+            if self.background_sync_enabled { "Background sync is on" } else { "Enable background sync" };
+        if ui.add_enabled(!self.background_sync_enabled, egui::Button::new(toggle_label)).clicked() {
+            self.save_settings();
+            self.background_sync_result = Some(
+                crate::startup::enable().and_then(|()| crate::startup::launch_now()),
+            );
+            if self.background_sync_result.as_ref().is_some_and(|r| r.is_ok()) {
+                self.background_sync_enabled = true;
             }
-            match &self.path_button_result {
-                Some(Ok(())) => {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(70, 160, 70),
-                        "Added. This won't shorten the Launch Options line above until Nimbus \
-                         itself is reopened (PATH changes only reach new processes) - then \
-                         restart Steam too, for it to see the change.",
-                    );
-                }
-                Some(Err(e)) => {
-                    ui.colored_label(egui::Color32::from_rgb(200, 80, 80), format!("Couldn't add to PATH: {e}"));
-                }
-                None => {}
+        }
+        match &self.background_sync_result {
+            Some(Ok(())) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(70, 160, 70),
+                    "Running - look for the Nimbus icon in your system tray.",
+                );
             }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::from_rgb(200, 80, 80), format!("Couldn't start it: {e}"));
+            }
+            None => {}
         }
 
         ui.add_space(12.0);
-        ui.strong("3. Set the Launch Options for each game");
-        ui.label("In Steam: right-click a game → Properties → General → Launch Options, and paste:");
-        let launch_options = config::launch_options_string();
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut launch_options.clone()).desired_width(380.0));
-            if ui.button("Copy").clicked() {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(launch_options.clone());
+        ui.collapsing("Advanced: Steam Launch Options (optional)", |ui| {
+            ui.label(
+                "Background sync already covers everything above - this is only useful if \
+                 you specifically want a guaranteed pull immediately before a Steam-owned \
+                 game launches, rather than relying on the tray watcher.",
+            );
+            let launch_options = config::launch_options_string();
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut launch_options.clone()).desired_width(340.0));
+                if ui.button("Copy").clicked() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(launch_options.clone());
+                    }
+                }
+            });
+            if let Some(dir) = config::install_dir() {
+                if ui.button("Add Nimbus to PATH").clicked() {
+                    self.path_button_result = Some(pathset::add_to_user_path(&dir));
+                }
+                match &self.path_button_result {
+                    Some(Ok(())) => {
+                        ui.colored_label(egui::Color32::from_rgb(70, 160, 70), "Added.");
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(egui::Color32::from_rgb(200, 80, 80), format!("Couldn't add to PATH: {e}"));
+                    }
+                    None => {}
                 }
             }
         });
-        ui.label(
-            "Repeat this on each PC, all pointed at the same shared folder. You can always \
-             come back to these settings, and manage individual games, from the Settings \
-             and Games tabs.",
-        );
 
         ui.add_space(16.0);
-        if ui.button("Get started").clicked() {
+        if ui.button("Done").clicked() {
             self.save_settings();
             self.config.onboarded = true;
             let _ = self.config.save();
@@ -387,6 +410,44 @@ impl NimbusApp {
                 }
                 None => {}
             }
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Background sync");
+        ui.label(
+            "Runs quietly in your system tray, watches every game Ludusavi finds locally, \
+             and syncs automatically - push the moment a save changes, pull when another \
+             PC has something newer. No Launch Options or shortcut edits needed.",
+        );
+        let toggle_label = if self.background_sync_enabled { "Disable background sync" } else { "Enable background sync" };
+        if ui.button(toggle_label).clicked() {
+            self.background_sync_result = Some(if self.background_sync_enabled {
+                crate::startup::disable()
+            } else {
+                crate::startup::enable().and_then(|()| crate::startup::launch_now())
+            });
+            if self.background_sync_result.as_ref().is_some_and(|r| r.is_ok()) {
+                self.background_sync_enabled = !self.background_sync_enabled;
+            }
+        }
+        match &self.background_sync_result {
+            Some(Ok(())) if self.background_sync_enabled => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(70, 160, 70),
+                    "Enabled and running now - look for the Nimbus icon in your system tray.",
+                );
+            }
+            Some(Ok(())) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(70, 160, 70),
+                    "Disabled. Quit it from the tray icon if it's still running from this session.",
+                );
+            }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::from_rgb(200, 80, 80), format!("Couldn't change this: {e}"));
+            }
+            None => {}
         }
 
         ui.add_space(12.0);

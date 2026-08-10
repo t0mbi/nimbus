@@ -2,51 +2,50 @@
 
 Self-hosted "cloud saves" for PC games. Keeps your saves in sync across multiple machines using a folder *you* control — a NAS share, an external drive, whatever — with no Steam Cloud, no subscription, and no per-game setup.
 
-Under the hood, Nimbus runs on [Ludusavi](https://github.com/mtkennerly/ludusavi)'s engine, which already knows where thousands of games keep their save files and how to move them between machines (even across Windows/Linux). But Ludusavi is a tool you invoke by hand, with its own separate settings window. Nimbus is the single program you actually run: **its own window** for setup, games, and manual sync, plus the auto-trigger that fires on every launch. You never need to open anything called "Ludusavi."
+Under the hood, Nimbus runs on [Ludusavi](https://github.com/mtkennerly/ludusavi)'s engine, which already knows where thousands of games keep their save files and how to move them between machines (even across Windows/Linux). But Ludusavi is a tool you invoke by hand, with its own separate settings window. Nimbus is the single program you actually run — set it up once, and it works quietly in the background from then on, the same way Steam Cloud does, just pointed at your own folder instead of Valve's servers.
 
 ## How it works
 
-You put this in a game's **Launch Options**:
+Nimbus's normal mode is a background daemon (`nimbus --tray`) that lives in your system tray:
 
-```
-nimbus %command%
-```
+- **Watches** every game Ludusavi finds local save data for. The moment a save file changes, it pushes that game to your sync folder.
+- **Polls** the sync folder periodically. If another PC has pushed something newer for a game, it pulls it down automatically.
 
-(or the full path to `nimbus.exe`, until it's on your `PATH` — see [Setup](#setup)). Your launcher expands `%command%` into the real command that starts the game, so nimbus ends up wrapping it. From there:
+No Steam Launch Options, no shortcut editing, nothing to configure per game. It doesn't matter how you launch anything — Steam, a desktop icon, whatever — because syncing isn't tied to a launch event at all, just to the save files actually changing.
 
-1. **Restore** — pulls the latest save for this game down from your sync folder.
-2. **Launch** — starts the real game and waits for it to exit. (Blocking matters: Steam considers a game "running" until the whole wrapped process tree exits.)
-3. **Back up** — pushes any changed saves back up.
-4. Exits.
+The one honest limitation: if you close a game on one PC and start it on another within the same short poll window (tens of seconds), the second PC could still be a beat behind. Real Steam Cloud has this same caveat (it tells you to wait a moment before switching machines) — this isn't worse, just not instantaneous.
 
-There's no background daemon and nothing running between sessions. Sync happens at the only two moments it needs to: right before you play, and right after you stop.
+For Steam-owned games specifically, there's also an optional launch-triggered mode (`nimbus %command%` in Launch Options) that guarantees a pull happens immediately before that specific launch, if you want the extra certainty on top of the background daemon. It's not required, and doesn't work reliably for non-Steam shortcuts (Steam only expands `%command%` for games it actually owns) — see [Advanced: launch-triggered mode](#advanced-launch-triggered-mode).
 
 ## Requirements
 
-- [Ludusavi](https://github.com/mtkennerly/ludusavi) — the save-discovery engine Nimbus drives. Either on your `PATH`, or just drop `ludusavi.exe` in the same folder as `nimbus.exe` (or `target/release/nimbus.exe` if building from source) — Nimbus checks next to itself first, so no PATH setup is required for this part.
+- [Ludusavi](https://github.com/mtkennerly/ludusavi) — the save-discovery engine Nimbus drives. Either on your `PATH`, or just drop `ludusavi.exe` (or `ludusavi` on Linux) in the same folder as `nimbus.exe` — Nimbus checks next to itself first, so no PATH setup is required for this part.
 - A sync destination reachable as a normal filesystem path — a mounted network share, an external drive.
 
 ## Setup
 
-Double-click `nimbus.exe` (or run `run.bat` in this folder).
+Double-click `nimbus.exe` (or run `run.bat` in this folder). The first time it runs, it opens a welcome screen:
 
-The **first time** it runs, it opens a welcome screen: a short explanation of how it works, the sync folder picker, the Add-to-PATH button, and the Launch Options line to paste into Steam, all in one place. After that, it opens straight to Nimbus's normal window:
+1. **Pick your sync folder** — Browse, or type a UNC path.
+2. **Enable background sync** — one click. Starts running immediately, and again automatically at every login from then on.
+3. *(Optional, collapsed by default)* the Launch Options string and Add-to-PATH button, for the advanced launch-triggered mode described above.
 
-- **Settings tab** — confirms Ludusavi is found, lets you pick the sync folder (Browse, or type a UNC path), format (zip, keeps history — recommended) and how many versions to retain, and gives you the exact Launch Options line with a Copy button. An **Add Nimbus to PATH** button lets Launch Options just say `nimbus %command%` instead of a full path (restart Steam afterward for it to take effect). A **Show welcome screen again** button at the bottom re-opens the first-run screen any time.
-- **Games tab** — lists everything Ludusavi finds local save data for, with manual **Push** (back up now) / **Pull** (restore now) per game, for whenever you want to sync without actually launching something.
+After that, Nimbus opens straight to its normal window with two tabs — **Settings** (sync folder, format/retention, the background-sync toggle, a **Show welcome screen again** button) and **Games** (everything Ludusavi finds locally, with manual **Push**/**Pull** per game for whenever you want to sync on demand). Repeat setup on your other machines, all pointed at the same shared folder.
 
-Paste the Launch Options line into each game's Steam **Properties → Launch Options**. Repeat on your other machines, all pointed at the same shared folder.
+The tray icon's right-click menu has **Sync now** (an immediate full check across every game), **Pause/Resume syncing**, **Open Nimbus** (the settings window), and **Quit**.
 
-If you already had Ludusavi configured before installing Nimbus, the welcome screen is skipped automatically on first launch (your existing sync folder is inherited as a starting point) — use **Show welcome screen again** if you want to see it anyway.
+If you already had Ludusavi configured before installing Nimbus, the welcome screen's sync-folder field is pre-filled from that as a starting point.
 
 ## Game identification
 
-Nimbus needs to know *which* game it's wrapping, and it should never make you look up an ID.
+The background daemon doesn't need to identify a "launching game" at all — it just watches whatever local save data Ludusavi already finds, so there's nothing to configure here for the primary sync path.
+
+Game identification only matters for the *optional* launch-triggered mode:
 
 - **Steam** — Steam sets a `SteamAppId` environment variable on everything it launches, including through a `%command%` wrapper. Nimbus inherits it and hands off to Ludusavi's own Steam lookup. Zero configuration.
-- **Anything else** (a raw shortcut, a launcher Steam doesn't wrap) — the first time Nimbus sees an executable it doesn't recognize, it guesses a game name from the folder/exe name (stripping scene-release noise like `-FLT`, `.GOG`, `_REPACK`) via `ludusavi find --fuzzy`, then shows a one-time Yes/No confirmation. Your answer is remembered — the exe→name mapping is saved, so you're never asked twice for the same game. Saying no to a guess it can't place at all offers "stop asking about this."
+- **Anything else** — the first time Nimbus sees an unrecognized executable, it guesses a game name from the folder/exe name (stripping scene-release noise like `-FLT`, `.GOG`, `_REPACK`) via `ludusavi find --fuzzy`, then shows a one-time Yes/No confirmation, remembered from then on.
 
-If Nimbus can't identify the game, or hasn't been given a sync folder yet, **it still launches the game**, just without syncing. A failed lookup should never stop you from playing.
+If Nimbus can't identify the game, or hasn't been given a sync folder yet, **it still launches the game**, just without that extra guaranteed pull. A failed lookup should never stop you from playing.
 
 ## Protecting your saves
 
@@ -62,7 +61,7 @@ Because Ludusavi stores saves in a relocatable form rather than mirroring raw pa
 
 ## Config
 
-Everything Nimbus needs is in its own config, at `%APPDATA%\nimbus\config.json` (Windows) / `~/.config/nimbus/config.json` (Linux) — Ludusavi's own config file is never read for settings (only, once, to pre-fill the sync folder if you'd already set one up before installing Nimbus) or written to at all:
+Everything Nimbus needs is in its own config, at `%APPDATA%\nimbus\config.json` (Windows) / `~/.config/nimbus/config.json` (Linux):
 
 ```json
 {
@@ -75,18 +74,31 @@ Everything Nimbus needs is in its own config, at `%APPDATA%\nimbus\config.json` 
 }
 ```
 
-`ludusavi_path` only needs setting if `ludusavi` isn't on `PATH` and no bundled copy is found next to Nimbus. Launch-time activity is logged to `nimbus.log` in the same folder — useful since the release build has no console window.
+`ludusavi_path` only needs setting if `ludusavi` isn't on `PATH` and no bundled copy is found next to Nimbus. Activity is logged to `nimbus.log` in the same folder — useful since the release build has no console window. The daemon also keeps a small `daemon_state.json` there, tracking the last remote timestamp it's accounted for per game (so a restart doesn't immediately re-pull everything, and its own pushes don't loop back as pulls).
 
-For testing, `NIMBUS_GAME_NAME` overrides identification for a single run without touching the saved config.
+For testing, `NIMBUS_GAME_NAME` overrides identification for a single launch-triggered run without touching the saved config.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `nimbus` | Open the settings window |
-| `nimbus <command> [args...]` | Restore, run the command (blocking), back up |
+| `nimbus --tray` | Run the background sync daemon (tray icon, no window) — usually started automatically, see Settings |
+| `nimbus <command> [args...]` | Advanced launch-triggered mode: restore, run the command (blocking), back up |
 | `nimbus --version` | Print version |
 | `nimbus --help` | Print help |
+
+## Advanced: launch-triggered mode
+
+For a game you actually own on Steam, put this in its Launch Options:
+
+```
+nimbus %command%
+```
+
+(or the full path to `nimbus.exe`, until it's on your `PATH` — the Settings tab's Add-to-PATH button handles that). Steam expands `%command%` into the real launch command, so Nimbus ends up wrapping it: restore, launch, wait for exit, back up.
+
+This does **not** work for non-Steam shortcuts — Steam only performs `%command%` substitution for games it actually owns. For a shortcut, Launch Options are just appended as plain arguments to whatever's in the Target field, so `nimbus %command%` there does nothing useful. This is exactly why the background daemon is the primary mechanism: it doesn't care how, or through what launcher, a game actually starts.
 
 ## Building
 
@@ -98,8 +110,8 @@ Produces a single self-contained binary (~3 MB) at `target/release/nimbus`. Buil
 
 ## Roadmap
 
-- `--infer heroic` / `--infer lutris` passthrough, which Ludusavi already supports, for launchers other than Steam that set an equivalent env var
-- Optional background service that checks for newer remote saves before you launch anything — a convenience, not a correctness fix, since the launch-time restore already handles that
+- A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for Steam Deck / gamescope-session handhelds, where the primary interface is Game Mode rather than a desktop with a system tray — same watch-and-poll design, implemented against Decky's Python backend instead of a native tray icon (in progress, see `deck/`)
+- `--infer heroic` / `--infer lutris` passthrough for the launch-triggered mode, for launchers other than Steam that set an equivalent env var
 
 Deliberately out of scope: sync over the open internet, and any launcher-specific integration beyond reading an env var.
 

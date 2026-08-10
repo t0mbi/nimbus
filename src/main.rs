@@ -4,11 +4,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod daemon;
 mod gameid;
 mod gui;
 mod log;
 mod ludusavi_ctl;
+mod toast;
 mod pathset;
+mod startup;
+mod tray;
 mod ui;
 mod wrap;
 
@@ -81,6 +85,10 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::SUCCESS
         }
+        Some("--tray") => {
+            daemon::run();
+            ExitCode::SUCCESS
+        }
         Some(_) => wrap::run(&args[1..]),
     }
 }
@@ -90,9 +98,13 @@ fn print_help() {
         r#"nimbus {VERSION} - self-hosted cloud saves, built on ludusavi
 
     nimbus                     Open settings (sync folder, games, Launch Options)
-    nimbus <command> [args]    Restore, run command (blocking), back up.
-                               This is what goes in Launch Options:
-                                   nimbus %command%
+    nimbus --tray              Run the background sync daemon (tray icon, no window).
+                               Usually started automatically at login - see Settings.
+    nimbus <command> [args]    Restore, run command (blocking), back up. Optional -
+                               for games launched some other way than Steam, the
+                               background daemon covers this without any setup.
+                               For Steam-owned games, this can still go in Launch
+                               Options: nimbus %command%
     nimbus --version
     nimbus --help
 "#
