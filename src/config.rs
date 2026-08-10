@@ -42,6 +42,13 @@ pub struct Config {
     /// on every single launch of something that isn't a game.
     #[serde(default)]
     pub ignored_exes: Vec<String>,
+    /// Whether the first-run welcome screen has been completed. Defaults to
+    /// false, which is exactly right for a genuinely new install - see
+    /// `Config::skip_onboarding_if_already_set_up` for the one-time
+    /// migration that keeps this from re-prompting existing configs that
+    /// predate this field.
+    #[serde(default)]
+    pub onboarded: bool,
 }
 
 pub fn config_dir() -> io::Result<PathBuf> {
@@ -131,6 +138,21 @@ impl Config {
             self.full_limit = settings.full_limit;
         }
     }
+
+    /// A config with a sync path already set clearly isn't a fresh install -
+    /// this covers anyone who used Nimbus before the onboarding screen
+    /// existed, so they aren't suddenly greeted with a first-run wizard.
+    /// Persists immediately so it only ever fires once.
+    pub fn skip_onboarding_if_already_set_up(&mut self) {
+        if is_pre_onboarding_config(self.onboarded, self.sync_path.is_some()) {
+            self.onboarded = true;
+            let _ = self.save();
+        }
+    }
+}
+
+fn is_pre_onboarding_config(onboarded: bool, has_sync_path: bool) -> bool {
+    !onboarded && has_sync_path
 }
 
 fn bundled_ludusavi() -> Option<PathBuf> {
@@ -224,10 +246,40 @@ fn scan_yaml_leaves(text: &str) -> HashMap<String, String> {
                 .chain(std::iter::once(key.as_str()))
                 .collect::<Vec<_>>()
                 .join(".");
-            out.insert(path, rest.trim_matches('"').to_string());
+            out.insert(path, unquote_yaml_scalar(rest));
         }
     }
     out
+}
+
+/// Strips YAML quoting from a scalar and un-escapes it. Windows UNC paths
+/// (`\\server\share`) are exactly the case that breaks without this: a
+/// double-quoted YAML string escapes each backslash, so a naive
+/// quote-strip leaves the escaping in place - and re-serializing that to
+/// JSON would double it again on every inherit.
+fn unquote_yaml_scalar(raw: &str) -> String {
+    if let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some(other) => out.push(other), // \\ -> \, \" -> ", etc.
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        return out;
+    }
+    if let Some(inner) = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        // Single-quoted YAML has no backslash escaping; '' is a literal '.
+        return inner.replace("''", "'");
+    }
+    raw.to_string()
 }
 
 #[cfg(test)]
@@ -293,5 +345,55 @@ restore:
         let leaves = scan_yaml_leaves(SAMPLE);
         assert_eq!(leaves.get("backup.format.zip.compression").map(|s| s.as_str()), Some("deflate"));
         assert_eq!(leaves.get("backup.retention.full").map(|s| s.as_str()), Some("5"));
+    }
+
+    #[test]
+    fn a_config_with_a_sync_path_already_set_is_not_a_fresh_install() {
+        // Anyone who used Nimbus before onboarding existed already has a
+        // sync_path but no onboarded flag - they should be migrated silently,
+        // not shown the first-run wizard.
+        assert!(is_pre_onboarding_config(false, true));
+    }
+
+    #[test]
+    fn a_genuinely_fresh_config_is_left_alone() {
+        assert!(!is_pre_onboarding_config(false, false));
+    }
+
+    #[test]
+    fn an_already_onboarded_config_is_never_touched_again() {
+        assert!(!is_pre_onboarding_config(true, true));
+        assert!(!is_pre_onboarding_config(true, false));
+    }
+
+    #[test]
+    fn unescapes_a_unc_path_from_double_quoted_yaml() {
+        // What ludusavi's own config.yaml actually contains on disk for a
+        // UNC path like \\TOWER\Daniel\Game Saves - each real backslash
+        // doubled by YAML's double-quote escaping.
+        assert_eq!(
+            unquote_yaml_scalar(r#""\\\\TOWER\\Daniel\\Game Saves""#),
+            r"\\TOWER\Daniel\Game Saves"
+        );
+    }
+
+    #[test]
+    fn unquote_handles_single_quoted_and_plain_scalars_too() {
+        assert_eq!(unquote_yaml_scalar("'it''s fine'"), "it's fine");
+        assert_eq!(unquote_yaml_scalar("simple"), "simple");
+    }
+
+    #[test]
+    fn inherited_unc_backup_path_round_trips_through_a_full_config_show_capture() {
+        let text = r#"---
+backup:
+  path: "\\\\TOWER\\Daniel\\Game Saves"
+  format:
+    chosen: zip
+  retention:
+    full: 5
+"#;
+        let settings = parse_backup_settings(text);
+        assert_eq!(settings.path.as_deref(), Some(r"\\TOWER\Daniel\Game Saves"));
     }
 }

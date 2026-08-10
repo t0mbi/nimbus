@@ -28,12 +28,16 @@ There's no background daemon and nothing running between sessions. Sync happens 
 
 ## Setup
 
-Double-click `nimbus.exe` (or run `run.bat` in this folder). It opens Nimbus's own window:
+Double-click `nimbus.exe` (or run `run.bat` in this folder).
 
-- **Settings tab** — confirms Ludusavi is found, lets you pick the sync folder (Browse, or type a UNC path), format (zip, keeps history — recommended) and how many versions to retain, and gives you the exact Launch Options line with a Copy button. An **Add Nimbus to PATH** button lets Launch Options just say `nimbus %command%` instead of a full path (restart Steam afterward for it to take effect).
+The **first time** it runs, it opens a welcome screen: a short explanation of how it works, the sync folder picker, the Add-to-PATH button, and the Launch Options line to paste into Steam, all in one place. After that, it opens straight to Nimbus's normal window:
+
+- **Settings tab** — confirms Ludusavi is found, lets you pick the sync folder (Browse, or type a UNC path), format (zip, keeps history — recommended) and how many versions to retain, and gives you the exact Launch Options line with a Copy button. An **Add Nimbus to PATH** button lets Launch Options just say `nimbus %command%` instead of a full path (restart Steam afterward for it to take effect). A **Show welcome screen again** button at the bottom re-opens the first-run screen any time.
 - **Games tab** — lists everything Ludusavi finds local save data for, with manual **Push** (back up now) / **Pull** (restore now) per game, for whenever you want to sync without actually launching something.
 
 Paste the Launch Options line into each game's Steam **Properties → Launch Options**. Repeat on your other machines, all pointed at the same shared folder.
+
+If you already had Ludusavi configured before installing Nimbus, the welcome screen is skipped automatically on first launch (your existing sync folder is inherited as a starting point) — use **Show welcome screen again** if you want to see it anyway.
 
 ## Game identification
 

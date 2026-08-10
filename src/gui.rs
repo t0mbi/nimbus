@@ -19,6 +19,12 @@ pub fn run() {
 }
 
 #[derive(PartialEq)]
+enum Screen {
+    Onboarding,
+    Main,
+}
+
+#[derive(PartialEq)]
 enum Tab {
     Settings,
     Games,
@@ -39,6 +45,7 @@ enum ActionState {
 
 struct NimbusApp {
     config: Config,
+    screen: Screen,
     tab: Tab,
     ludusavi_status: LudusaviStatus,
 
@@ -63,6 +70,7 @@ impl NimbusApp {
     fn new() -> Self {
         let mut config = Config::load().unwrap_or_default();
         config.inherit_from_ludusavi_if_unset();
+        config.skip_onboarding_if_already_set_up();
 
         let bin = config.ludusavi_bin();
         let ludusavi_status = match config::probe_ludusavi(&bin) {
@@ -77,9 +85,11 @@ impl NimbusApp {
             .unwrap_or_default();
         let format_zip = config.format() == "zip";
         let full_limit_text = config.full_limit().to_string();
+        let screen = if config.onboarded { Screen::Main } else { Screen::Onboarding };
 
         Self {
             config,
+            screen,
             tab: Tab::Settings,
             ludusavi_status,
             sync_path_text,
@@ -170,21 +180,111 @@ impl eframe::App for NimbusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background_work(ctx);
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
-                ui.selectable_value(&mut self.tab, Tab::Games, "Games");
-            });
-        });
+        match self.screen {
+            Screen::Onboarding => {
+                egui::CentralPanel::default().show(ctx, |ui| self.onboarding_screen(ui));
+            }
+            Screen::Main => {
+                egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+                        ui.selectable_value(&mut self.tab, Tab::Games, "Games");
+                    });
+                });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Settings => self.settings_tab(ui),
-            Tab::Games => self.games_tab(ui),
-        });
+                egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+                    Tab::Settings => self.settings_tab(ui),
+                    Tab::Games => self.games_tab(ui),
+                });
+            }
+        }
     }
 }
 
 impl NimbusApp {
+    fn onboarding_screen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Welcome to Nimbus");
+        ui.add_space(4.0);
+        ui.label(
+            "Nimbus keeps your game saves in sync across your PCs, using a folder you \
+             control - a NAS share, an external drive - instead of Steam Cloud or a \
+             subscription.",
+        );
+        ui.label(
+            "When a game launches through Nimbus, it pulls your latest save first. When \
+             you quit, it pushes anything that changed back. That's the whole thing - no \
+             background service, nothing running between sessions.",
+        );
+        ui.add_space(12.0);
+        ui.separator();
+
+        ui.add_space(8.0);
+        ui.strong("1. Where should saves sync to?");
+        ui.label("A shared network location, mounted as a normal path (e.g. a NAS share).");
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.sync_path_text);
+            if ui.button("Browse…").clicked() {
+                if let Some(picked) = rfd::FileDialog::new().pick_folder() {
+                    self.sync_path_text = picked.display().to_string();
+                }
+            }
+        });
+        if !self.sync_path_text.trim().is_empty() && ui::looks_local(&self.sync_path_text) {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 150, 50),
+                "That looks like a folder on this PC, not a network share - saves won't \
+                 reach your other machines until this points at a shared folder.",
+            );
+        }
+
+        ui.add_space(12.0);
+        ui.strong("2. Add Nimbus to PATH (optional)");
+        ui.label("Lets Launch Options just say \"nimbus %command%\" instead of a full path.");
+        if let Some(dir) = config::install_dir() {
+            if ui.button("Add Nimbus to PATH").clicked() {
+                self.path_button_result = Some(pathset::add_to_user_path(&dir));
+            }
+            match &self.path_button_result {
+                Some(Ok(())) => {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(70, 160, 70),
+                        "Added. Restart Steam (and any open terminals) for it to take effect.",
+                    );
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(egui::Color32::from_rgb(200, 80, 80), format!("Couldn't add to PATH: {e}"));
+                }
+                None => {}
+            }
+        }
+
+        ui.add_space(12.0);
+        ui.strong("3. Set the Launch Options for each game");
+        ui.label("In Steam: right-click a game → Properties → General → Launch Options, and paste:");
+        let launch_options = config::launch_options_string();
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut launch_options.clone()).desired_width(380.0));
+            if ui.button("Copy").clicked() {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(launch_options.clone());
+                }
+            }
+        });
+        ui.label(
+            "Repeat this on each PC, all pointed at the same shared folder. You can always \
+             come back to these settings, and manage individual games, from the Settings \
+             and Games tabs.",
+        );
+
+        ui.add_space(16.0);
+        if ui.button("Get started").clicked() {
+            self.save_settings();
+            self.config.onboarded = true;
+            let _ = self.config.save();
+            self.screen = Screen::Main;
+        }
+    }
+
     fn settings_tab(&mut self, ui: &mut egui::Ui) {
         match &self.ludusavi_status {
             LudusaviStatus::Found(version) => {
@@ -284,6 +384,12 @@ impl NimbusApp {
                 }
                 None => {}
             }
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        if ui.button("Show welcome screen again").clicked() {
+            self.screen = Screen::Onboarding;
         }
     }
 
