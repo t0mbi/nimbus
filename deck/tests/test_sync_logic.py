@@ -37,19 +37,25 @@ def make_local_file(mtime_offset_seconds=0):
     return f.name
 
 
+def remote_entry(when: str):
+    """Builds a `(when, epoch)` pair the way `_latest_remote_all` would, for
+    tests that pass a pre-fetched remote_map directly to `_sync_game` -
+    matching how `_poll_once` actually calls it now (fetch once, use for
+    every game), not one `_run_ludusavi` call per game."""
+    return (when, main._parse_rfc3339(when))
+
+
 async def run():
     # Scenario 1: no remote backup exists yet -> push
     p = fresh_plugin()
     local_file = make_local_file()
     with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
         async def fake_run(args):
-            if args[0] == "backups":
-                return 0, json.dumps({"games": {}}), ""
             if args[0] == "backup":
                 return 0, "", ""
             return 1, "", "unexpected"
         mock_run.side_effect = fake_run
-        outcome = await p._sync_game({"name": "Game A", "paths": [local_file]}, "/mnt/nas/saves")
+        outcome = await p._sync_game({"name": "Game A", "paths": [local_file]}, "/mnt/nas/saves", {})
     check("no remote backup yet -> push", outcome, "pushed")
 
     # Scenario 2: local newer than remote -> push
@@ -58,13 +64,13 @@ async def run():
     old_remote = "2020-01-01T00:00:00.000000000Z"
     with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
         async def fake_run(args):
-            if args[0] == "backups":
-                return 0, json.dumps({"games": {"Game B": {"backups": [{"when": old_remote}]}}}), ""
             if args[0] == "backup":
                 return 0, "", ""
             return 1, "", "unexpected"
         mock_run.side_effect = fake_run
-        outcome = await p._sync_game({"name": "Game B", "paths": [local_file]}, "/mnt/nas/saves")
+        outcome = await p._sync_game(
+            {"name": "Game B", "paths": [local_file]}, "/mnt/nas/saves", {"Game B": remote_entry(old_remote)}
+        )
     check("local newer than remote -> push", outcome, "pushed")
 
     # Scenario 3: remote newer than local, not yet accounted for -> pull
@@ -73,13 +79,13 @@ async def run():
     future_remote = "2099-01-01T00:00:00.000000000Z"
     with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
         async def fake_run(args):
-            if args[0] == "backups":
-                return 0, json.dumps({"games": {"Game C": {"backups": [{"when": future_remote}]}}}), ""
             if args[0] == "restore":
                 return 0, "", ""
             return 1, "", "unexpected"
         mock_run.side_effect = fake_run
-        outcome = await p._sync_game({"name": "Game C", "paths": [local_file]}, "/mnt/nas/saves")
+        outcome = await p._sync_game(
+            {"name": "Game C", "paths": [local_file]}, "/mnt/nas/saves", {"Game C": remote_entry(future_remote)}
+        )
     check("remote newer, unaccounted -> pull", outcome, "pulled")
     check("state marker updated after pull", p.state["last_synced_remote"].get("Game C"), future_remote)
 
@@ -90,20 +96,42 @@ async def run():
     local_file = make_local_file(mtime_offset_seconds=-1000)
     p.state["last_synced_remote"]["Game D"] = future_remote
     with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
-        async def fake_run(args):
-            if args[0] == "backups":
-                return 0, json.dumps({"games": {"Game D": {"backups": [{"when": future_remote}]}}}), ""
-            return 1, "", "should not push or pull in this scenario"
-        mock_run.side_effect = fake_run
-        outcome = await p._sync_game({"name": "Game D", "paths": [local_file]}, "/mnt/nas/saves")
+        mock_run.side_effect = AssertionError("should not push or pull in this scenario")
+        outcome = await p._sync_game(
+            {"name": "Game D", "paths": [local_file]}, "/mnt/nas/saves", {"Game D": remote_entry(future_remote)}
+        )
     check("remote newer but already accounted for -> skip (no ping-pong)", outcome, "skipped")
 
     # Scenario 5: no local save data at all -> skip without even calling ludusavi
     p = fresh_plugin()
     with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
         mock_run.side_effect = AssertionError("should never be called for a game with no local files")
-        outcome = await p._sync_game({"name": "Game E", "paths": ["/does/not/exist"]}, "/mnt/nas/saves")
+        outcome = await p._sync_game({"name": "Game E", "paths": ["/does/not/exist"]}, "/mnt/nas/saves", {})
     check("no local save data -> skip without calling ludusavi", outcome, "skipped")
+
+    # Scenario 6: the actual batching fix - _latest_remote_all makes exactly
+    # ONE ludusavi call no matter how many games are in the response, and
+    # never passes a per-game name argument (that's what "all games in one
+    # call" means at the CLI level - see main.py's docstring on this).
+    p = fresh_plugin()
+    call_count = 0
+    with patch.object(main, "_run_ludusavi", new=AsyncMock()) as mock_run:
+        async def fake_run(args):
+            nonlocal call_count
+            call_count += 1
+            assert args == ["backups", "--api", "--path", "/mnt/nas/saves"], (
+                f"expected exactly the batched 'all games' call with no name arg, got {args}"
+            )
+            return 0, json.dumps({
+                "games": {
+                    "Game F": {"backups": [{"when": "2025-01-01T00:00:00.000000000Z"}]},
+                    "Game G": {"backups": [{"when": "2025-06-01T00:00:00.000000000Z"}]},
+                }
+            }), ""
+        mock_run.side_effect = fake_run
+        remote_map = await p._latest_remote_all("/mnt/nas/saves")
+    check("_latest_remote_all makes exactly one call for many games", call_count, 1)
+    check("_latest_remote_all returns every game", sorted(remote_map.keys()), ["Game F", "Game G"])
 
     for f in [local_file]:
         try:

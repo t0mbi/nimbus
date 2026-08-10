@@ -107,6 +107,16 @@ def _parse_rfc3339(value: str) -> float:
     return datetime.fromisoformat(s).timestamp()
 
 
+def _newest(backups: list[dict]):
+    """(raw_when_string, epoch_seconds) for the newest entry in a ludusavi
+    `backups` list, or (None, None) if it's empty."""
+    whens = [b["when"] for b in backups if "when" in b]
+    if not whens:
+        return None, None
+    latest_when = max(whens)
+    return latest_when, _parse_rfc3339(latest_when)
+
+
 class Plugin:
     async def _main(self):
         self.settings = _load_json(_settings_path(), {})
@@ -180,9 +190,11 @@ class Plugin:
             return
 
         games = await self._list_games()
+        remote_map = await self._latest_remote_all(sync_path)
+
         pushed, pulled, failed = [], [], []
         for game in games:
-            outcome = await self._sync_game(game, sync_path)
+            outcome = await self._sync_game(game, sync_path, remote_map)
             if outcome == "pushed":
                 pushed.append(game["name"])
             elif outcome == "pulled":
@@ -228,8 +240,11 @@ class Plugin:
         return latest
 
     async def _latest_remote(self, name: str, sync_path: str):
-        """Returns (raw_when_string, epoch_seconds) for the newest remote
-        backup, or (None, None) if there isn't one yet."""
+        """Returns (raw_when_string, epoch_seconds) for one game's newest
+        remote backup, or (None, None) if there isn't one yet. Only for the
+        one legitimate per-game use left (updating the marker right after
+        *this* game was just pushed) - never call this in a loop over many
+        games. See `_latest_remote_all`."""
         code, out, err = await _run_ludusavi(["backups", "--api", "--path", sync_path, name])
         if code != 0:
             return None, None
@@ -238,21 +253,42 @@ class Plugin:
         except json.JSONDecodeError:
             return None, None
         backups = data.get("games", {}).get(name, {}).get("backups", [])
-        if not backups:
-            return None, None
-        whens = [b["when"] for b in backups if "when" in b]
-        if not whens:
-            return None, None
-        latest_when = max(whens)
-        return latest_when, _parse_rfc3339(latest_when)
+        return _newest(backups)
 
-    async def _sync_game(self, game: dict, sync_path: str) -> str:
+    async def _latest_remote_all(self, sync_path: str) -> dict:
+        """Same data as `_latest_remote`, for every game at `sync_path` in a
+        single call - measured cost on the Windows build was ~850ms per
+        `ludusavi` invocation almost regardless of subcommand or how much
+        data is asked about, because it loads/parses its full manifest on
+        startup; `--version` alone was ~80ms, everything else was ~850ms
+        whether asking about one game or all of them. A poll loop calling
+        this once per game, per cycle, would turn a supposedly-cheap timer
+        into `num_games` x ~850ms of real work every cycle - potentially
+        longer than the interval itself for a large library. One call
+        covering everything costs the same as one call covering one game.
+        """
+        code, out, err = await _run_ludusavi(["backups", "--api", "--path", sync_path])
+        if code != 0:
+            decky.logger.warning(f"Nimbus: couldn't check remote backups: {err}")
+            return {}
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return {}
+        result = {}
+        for name, info in data.get("games", {}).items():
+            when, epoch = _newest(info.get("backups", []))
+            if when is not None:
+                result[name] = (when, epoch)
+        return result
+
+    async def _sync_game(self, game: dict, sync_path: str, remote_map: dict) -> str:
         name = game["name"]
         local_mtime = await self._latest_local_mtime(game["paths"])
         if local_mtime == 0.0:
             return "skipped"
 
-        remote_when, remote_epoch = await self._latest_remote(name, sync_path)
+        remote_when, remote_epoch = remote_map.get(name, (None, None))
 
         if remote_epoch is None:
             return await self._push(name, sync_path)
