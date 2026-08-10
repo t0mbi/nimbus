@@ -213,8 +213,18 @@ fn start_poll_thread(games: Vec<GameStatus>, config: Config, paused: Arc<AtomicB
         if paused.load(Ordering::Relaxed) {
             continue;
         }
-        poll_all(&games, &config, &state);
+        // Silent when there's nothing to report - a background timer tick
+        // announcing "nothing happened" every 45s forever would be its own
+        // kind of noise.
+        let summary = poll_all(&games, &config, &state);
+        announce(&summary);
     });
+}
+
+#[derive(Default)]
+struct PollSummary {
+    pulled: Vec<String>,
+    failed: Vec<(String, String)>,
 }
 
 /// One `ludusavi backups --api` call covering every game, not one call per
@@ -222,25 +232,34 @@ fn start_poll_thread(games: Vec<GameStatus>, config: Config, paused: Arc<AtomicB
 /// Measured: ~850ms either way on this machine, so doing it per-game here
 /// would turn a 45s poll interval into 71 games x ~850ms = over a minute of
 /// actual work per cycle, longer than the interval itself.
-fn poll_all(games: &[GameStatus], config: &Config, state: &Arc<Mutex<DaemonState>>) {
+fn poll_all(games: &[GameStatus], config: &Config, state: &Arc<Mutex<DaemonState>>) -> PollSummary {
     let bin = config.ludusavi_bin();
-    let Some(sync_path) = &config.sync_path else { return };
+    let mut summary = PollSummary::default();
+    let Some(sync_path) = &config.sync_path else { return summary };
 
     let remote = match ludusavi_ctl::latest_remote_backups_all(&bin, sync_path) {
         Ok(map) => map,
         Err(e) => {
             log::line(&format!("daemon: couldn't check remote backups: {e}"));
-            return;
+            return summary;
         }
     };
 
     for game in games {
         let Some(remote_ts) = remote.get(&game.name) else { continue };
         let local_epoch = ludusavi_ctl::latest_local_mtime_epoch(&game.paths);
-        poll_one(&bin, sync_path, &game.name, remote_ts, local_epoch, state);
+        match poll_one(&bin, sync_path, &game.name, remote_ts, local_epoch, state) {
+            Some(Ok(())) => summary.pulled.push(game.name.clone()),
+            Some(Err(e)) => summary.failed.push((game.name.clone(), e)),
+            None => {}
+        }
     }
+    summary
 }
 
+/// A single game's worth of the poll decision. Returns `None` for "nothing
+/// to do" (already accounted for, or remote isn't actually newer), so the
+/// caller can tell "checked and quiet" apart from "checked and acted."
 fn poll_one(
     bin: &Path,
     sync_path: &Path,
@@ -248,14 +267,14 @@ fn poll_one(
     remote_ts: &str,
     local_epoch: Option<f64>,
     state: &Arc<Mutex<DaemonState>>,
-) {
+) -> Option<Result<(), String>> {
     let already_known = {
         let s = state.lock().unwrap();
         s.last_synced_remote.get(name).cloned()
     };
 
     if already_known.as_deref() == Some(remote_ts) {
-        return; // nothing new since we last accounted for this
+        return None; // nothing new since we last accounted for this
     }
 
     // The actual bug this guards against: on a daemon's first-ever run
@@ -270,26 +289,49 @@ fn poll_one(
         let mut s = state.lock().unwrap();
         s.last_synced_remote.insert(name.to_string(), remote_ts.to_string());
         s.save();
-        return;
+        return None;
     }
 
     log::line(&format!("daemon: remote has a newer save for {name}, pulling"));
     match ludusavi_ctl::restore(bin, sync_path, name) {
         Ok(()) => {
-            toast::pulled(name);
             let mut s = state.lock().unwrap();
             s.last_synced_remote.insert(name.to_string(), remote_ts.to_string());
             s.save();
+            Some(Ok(()))
         }
         Err(e) => {
             log::line(&format!("daemon: pull failed for {name}: {e}"));
-            toast::restore_failed(name, &e);
+            Some(Err(e))
         }
     }
 }
 
+/// One notification per poll pass, not one per game: a single pull gets the
+/// normal detailed toast, several at once collapse into one summary instead
+/// of firing in rapid succession (exactly what happened on a first run
+/// against a share with a lot of pre-existing history).
+fn announce(summary: &PollSummary) {
+    match summary.pulled.len() {
+        0 => {}
+        1 => toast::pulled(&summary.pulled[0]),
+        n => toast::info(&format!("{n} games updated"), &format!("Pulled newer saves for: {}", summary.pulled.join(", "))),
+    }
+
+    match summary.failed.len() {
+        0 => {}
+        1 => toast::restore_failed(&summary.failed[0].0, &summary.failed[0].1),
+        n => toast::info(
+            &format!("{n} games failed to sync"),
+            &summary.failed.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", "),
+        ),
+    }
+}
+
 /// Full manual sync pass for every known game, either direction as needed -
-/// what the tray's "Sync now" triggers.
+/// what the tray's "Sync now" triggers. Unlike the automatic timer, this
+/// always confirms something, even "nothing to do" - the user explicitly
+/// asked and deserves an answer either way.
 fn sync_all_now(config: &Config, state: &Arc<Mutex<DaemonState>>) {
     let bin = config.ludusavi_bin();
     let games = match ludusavi_ctl::list_games(&bin) {
@@ -300,6 +342,10 @@ fn sync_all_now(config: &Config, state: &Arc<Mutex<DaemonState>>) {
             return;
         }
     };
-    poll_all(&games, config, state);
-    toast::info("Nimbus", "Sync check complete.");
+    let summary = poll_all(&games, config, state);
+    if summary.pulled.is_empty() && summary.failed.is_empty() {
+        toast::info("Nimbus", "Already up to date.");
+    } else {
+        announce(&summary);
+    }
 }

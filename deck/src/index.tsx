@@ -71,19 +71,24 @@ function Content() {
       setStatus(await ludusaviStatus());
     })();
 
-    const listener = addEventListener<[game: string, kind: string, reason: string | null]>(
-      "nimbus_game_event",
-      (game, kind, reason) => {
-        if (kind === "pushed") {
-          toaster.toast({ title: "Nimbus", body: `${game} backed up` });
-        } else if (kind === "pulled") {
-          toaster.toast({ title: "Nimbus", body: `${game} updated from another PC` });
-        } else {
-          toaster.toast({ title: `Nimbus: ${game}`, body: reason ?? "Sync failed" });
+    // One event per sync pass, not one per game - see main.py's
+    // _emit_summary for why (a first run against a share with a lot of
+    // pre-existing history used to fire a toast per game, all at once).
+    const listener = addEventListener<[pushed: string[], pulled: string[], failed: string[]]>(
+      "nimbus_sync_summary",
+      (pushed, pulled, failed) => {
+        if (pushed.length === 0 && pulled.length === 0 && failed.length === 0) {
+          toaster.toast({ title: "Nimbus", body: "Already up to date." });
+          return;
         }
+        const parts: string[] = [];
+        if (pushed.length) parts.push(`pushed ${pushed.join(", ")}`);
+        if (pulled.length) parts.push(`pulled ${pulled.join(", ")}`);
+        if (failed.length) parts.push(`failed: ${failed.join(", ")}`);
+        toaster.toast({ title: "Nimbus", body: parts.join(" · ") });
       },
     );
-    return () => removeEventListener("nimbus_game_event", listener);
+    return () => removeEventListener("nimbus_sync_summary", listener);
   }, []);
 
   const savePath = async () => {

@@ -68,6 +68,7 @@ fn attach_parent_console_if_any() {}
 
 fn main() -> ExitCode {
     attach_parent_console_if_any();
+    toast::register_app_identity();
 
     let args: Vec<String> = env::args().collect();
 

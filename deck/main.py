@@ -170,7 +170,9 @@ class Plugin:
 
     async def sync_now(self):
         await self._poll_once()
-        await decky.emit("nimbus_sync_complete", self.last_result)
+        # Unlike the automatic timer, a manual click always gets a toast, even
+        # "nothing to do" - the user explicitly asked and deserves an answer.
+        await self._emit_summary(always=True)
         return self.last_result
 
     # ---------------------------------------------------------------
@@ -182,6 +184,9 @@ class Plugin:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             if not self.paused:
                 await self._poll_once()
+                # Silent when quiet - a background timer announcing "nothing
+                # happened" every 20s forever would be its own kind of noise.
+                await self._emit_summary(always=False)
 
     async def _poll_once(self):
         sync_path = self.settings.get("sync_path")
@@ -213,6 +218,23 @@ class Plugin:
             decky.logger.info(
                 f"Nimbus: sync pass - pushed {pushed}, pulled {pulled}, failed {failed}"
             )
+
+    async def _emit_summary(self, always: bool):
+        """One event per sync pass, not one per game - several games
+        changing in the same 20s tick used to fire a toast each, which is
+        exactly what happened on a first run against a share with a lot of
+        pre-existing history. `always=False` (the automatic timer) stays
+        silent when nothing happened; `always=True` (manual Sync Now)
+        confirms either way."""
+        r = self.last_result
+        if not r or not r.get("ok"):
+            return
+        pushed, pulled, failed = r.get("pushed", []), r.get("pulled", []), r.get("failed", [])
+        if not (pushed or pulled or failed):
+            if always:
+                await decky.emit("nimbus_sync_summary", [], [], [])
+            return
+        await decky.emit("nimbus_sync_summary", pushed, pulled, failed)
 
     async def _list_games(self):
         code, out, err = await _run_ludusavi(["backup", "--preview", "--api"])
@@ -317,7 +339,6 @@ class Plugin:
         )
         if code != 0:
             decky.logger.warning(f"Nimbus: push failed for {name}: {err}")
-            await decky.emit("nimbus_game_event", name, "push_failed", err)
             return "failed"
 
         when_after, _ = await self._latest_remote(name, sync_path)
@@ -325,7 +346,6 @@ class Plugin:
             self.state["last_synced_remote"][name] = when_after
             _save_json(_state_path(), self.state)
         decky.logger.info(f"Nimbus: pushed {name}")
-        await decky.emit("nimbus_game_event", name, "pushed", None)
         return "pushed"
 
     async def _pull(self, name: str, sync_path: str, remote_when: str) -> str:
@@ -334,11 +354,9 @@ class Plugin:
         )
         if code != 0:
             decky.logger.warning(f"Nimbus: pull failed for {name}: {err}")
-            await decky.emit("nimbus_game_event", name, "pull_failed", err)
             return "failed"
 
         self.state["last_synced_remote"][name] = remote_when
         _save_json(_state_path(), self.state)
         decky.logger.info(f"Nimbus: pulled {name}")
-        await decky.emit("nimbus_game_event", name, "pulled", None)
         return "pulled"
