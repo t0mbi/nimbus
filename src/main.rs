@@ -17,7 +17,54 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// A windows-subsystem binary starts with no console and invalid stdio
+/// handles - by design, so double-clicking or Steam launching it never
+/// flashes a window. But that also silently swallows `println!` when someone
+/// runs it directly from an existing terminal, which is a real papercut for
+/// `--version`/`--help`. This is the standard fix: if a console the process
+/// could attach to already exists (i.e. it was actually run from a shell),
+/// attach to it and point stdout/stderr at it. If there's no such console
+/// (Steam, Explorer double-click), this is a harmless no-op and everything
+/// stays silent exactly as before.
+#[cfg(windows)]
+fn attach_parent_console_if_any() {
+    use std::ptr::null;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+
+        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let handle = CreateFileW(
+            name.as_ptr(),
+            0xC000_0000, // GENERIC_READ | GENERIC_WRITE
+            FILE_SHARE_WRITE | FILE_SHARE_READ,
+            null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_OUTPUT_HANDLE, handle);
+            SetStdHandle(STD_ERROR_HANDLE, handle);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console_if_any() {}
+
 fn main() -> ExitCode {
+    attach_parent_console_if_any();
+
     let args: Vec<String> = env::args().collect();
 
     match args.get(1).map(|s| s.as_str()) {
