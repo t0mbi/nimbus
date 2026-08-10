@@ -1,0 +1,11 @@
+{
+  "name": "Nimbus",
+  "author": "t0mbi",
+  "flags": ["debug"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["saves", "backup", "sync"],
+    "description": "Self-hosted cloud saves: watches your games' local save files and syncs them to your own SMB share, no per-game setup.",
+    "image": "https://raw.githubusercontent.com/t0mbi/nimbus/main/deck/assets/icon.png"
+  }
+}
