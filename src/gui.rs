@@ -248,7 +248,9 @@ impl NimbusApp {
                 Some(Ok(())) => {
                     ui.colored_label(
                         egui::Color32::from_rgb(70, 160, 70),
-                        "Added. Restart Steam (and any open terminals) for it to take effect.",
+                        "Added. This won't shorten the Launch Options line above until Nimbus \
+                         itself is reopened (PATH changes only reach new processes) - then \
+                         restart Steam too, for it to see the change.",
                     );
                 }
                 Some(Err(e)) => {
@@ -375,8 +377,9 @@ impl NimbusApp {
                 Some(Ok(())) => {
                     ui.colored_label(
                         egui::Color32::from_rgb(70, 160, 70),
-                        "Added. Restart Steam (and any open terminals) for it to take effect, \
-                         then Launch Options can just say: nimbus %command%",
+                        "Added. Reopen Nimbus and it'll show the short Launch Options line \
+                         below - PATH changes only reach new processes, not this one. \
+                         Restart Steam too, once you use the short form.",
                     );
                 }
                 Some(Err(e)) => {

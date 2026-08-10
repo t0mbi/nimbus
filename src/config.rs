@@ -165,19 +165,44 @@ fn key(exe: &Path) -> String {
     exe.to_string_lossy().to_string()
 }
 
-/// The exact string to paste into a game's Launch Options. Quoted because the
-/// install path usually contains spaces.
+/// The exact string to paste into a game's Launch Options: the short form if
+/// Nimbus's own folder is actually on `PATH`, otherwise the full quoted path.
+///
+/// Note this can only ever reflect *this process's* `PATH` - a registry PATH
+/// write (see `pathset::add_to_user_path`) never propagates to a process
+/// that's already running, including Nimbus itself. So right after clicking
+/// "Add to PATH", this still correctly shows the full path; it only switches
+/// to the short form on a subsequent launch, once a fresh process actually
+/// inherits the updated PATH.
 pub fn launch_options_string() -> String {
+    if install_dir_is_on_path() {
+        return "nimbus %command%".to_string();
+    }
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "nimbus".into());
     format!("\"{exe}\" %command%")
 }
 
-/// Just the exe's own directory, quoted - what an "Add to PATH" step needs,
-/// as opposed to the full launch_options_string.
+/// Just the exe's own directory - what an "Add to PATH" step needs, as
+/// opposed to the full launch_options_string.
 pub fn install_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
+}
+
+fn install_dir_is_on_path() -> bool {
+    let Some(dir) = install_dir() else { return false };
+    let Ok(path_var) = std::env::var("PATH") else { return false };
+    std::env::split_paths(&path_var).any(|entry| paths_match(&entry, &dir))
+}
+
+fn paths_match(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        // A PATH entry that doesn't exist can't canonicalize - fall back to a
+        // plain comparison rather than silently treating it as a mismatch.
+        _ => a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()),
+    }
 }
 
 /// Version string if the configured Ludusavi actually runs, else None.
